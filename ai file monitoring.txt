@@ -1,0 +1,143 @@
+import cv2
+import face_recognition
+import numpy as np
+import os
+import time
+from openpyxl import Workbook, load_workbook
+
+# Directory containing student images for training
+train_dir = r"C:\Users\rampr\Desktop\Student attendance system\Student Data"
+
+# Excel file to log attendance
+excel_file = "attendance_log.xlsx"
+
+# Initialize or load the Excel sheet
+if not os.path.exists(excel_file):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Attendance"
+    sheet.append(["Name", "Date", "Time"])  # Set headers
+    workbook.save(excel_file)
+else:
+    workbook = load_workbook(excel_file)
+
+sheet = workbook.active
+
+# Function to calculate face encodings for each student in the training directory
+def train_student_faces(train_dir):
+    known_encodings = []
+    known_names = []
+
+    for folder_name in os.listdir(train_dir):
+        student_folder_path = os.path.join(train_dir, folder_name)
+        if not os.path.isdir(student_folder_path):
+            continue  # Skip non-folder files
+
+        for filename in os.listdir(student_folder_path):
+            image_path = os.path.join(student_folder_path, filename)
+            if not (filename.endswith(".jpg") or filename.endswith(".png")):
+                continue  # Skip non-image files
+
+            print(f"Processing image: {image_path}")  # Debugging
+
+            # Load the image
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"Failed to load image: {image_path}")
+                continue
+
+            # Convert image to RGB and detect faces
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            face_locations = face_recognition.face_locations(rgb_image)
+            print(f"Found {len(face_locations)} face(s) in {image_path}.")  # Debugging
+
+            if face_locations:
+                encodings = face_recognition.face_encodings(rgb_image, face_locations)
+                if encodings:
+                    known_encodings.append(encodings[0])
+                    known_names.append(folder_name)  # Use folder name as student's name
+                else:
+                    print(f"No encodings found for {image_path}.")
+
+    print(f"Trained on {len(known_encodings)} faces.")  # Debugging
+    return known_encodings, known_names
+
+# Train the system with the student images
+known_encodings, known_names = train_student_faces(train_dir)
+
+# Start real-time video capture for detection
+video_capture = cv2.VideoCapture(0)
+
+# Acknowledgment display settings
+acknowledgment_display_time = 2  # Seconds
+acknowledgment_start_time = None
+acknowledgment_name = None
+
+# Set to track students whose attendance has been marked during this session
+marked_attendance_set = set()
+
+# Function to record attendance in the Excel sheet
+def record_attendance(name):
+    global acknowledgment_start_time, acknowledgment_name
+    date = time.strftime("%Y-%m-%d")
+    current_time = time.strftime("%H:%M:%S")
+
+    # Check for duplicate entries in the current session
+    if name in marked_attendance_set:
+        return  # Skip if already marked in this session
+
+    # Record attendance and show acknowledgment
+    sheet.append([name, date, current_time])
+    workbook.save(excel_file)
+    marked_attendance_set.add(name)
+    acknowledgment_name = name
+    acknowledgment_start_time = time.time()
+    print(f"Attendance marked for {name} at {current_time}.")  # Debugging
+
+# Main loop for real-time face detection and attendance marking
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        print("Failed to capture video frame.")
+        break
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+    for face_encoding, face_location in zip(face_encodings, face_locations):
+        matches = face_recognition.compare_faces(known_encodings, face_encoding, tolerance=0.5)  # Adjusted tolerance
+        name = "Unknown"
+
+        if True in matches:
+            first_match_index = matches.index(True)
+            name = known_names[first_match_index]
+            print(f"Matched face: {name}")  # Debugging output
+
+        # Record attendance if a name was matched
+        if name != "Unknown":
+            record_attendance(name)
+
+        # Draw a rectangle around the face
+        top, right, bottom, left = face_location
+        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+        cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    # Display acknowledgment if attendance was marked
+    if acknowledgment_name and acknowledgment_start_time:
+        elapsed_time = time.time() - acknowledgment_start_time
+        if elapsed_time < acknowledgment_display_time:
+            cv2.putText(frame, f"Attendance marked for {acknowledgment_name}",
+                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            acknowledgment_name = None
+            acknowledgment_start_time = None
+
+    # Display the video feed
+    cv2.imshow("Video", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the capture and close the window
+video_capture.release()
+cv2.destroyAllWindows()
